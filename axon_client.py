@@ -2,6 +2,15 @@
 """
 Axon Reporting API Client
 A Python client for querying Axon (AppLovin) Reporting API
+
+ROAS Terminology:
+- D0/D1/D3/D7/D28 ROAS = Total ROAS (IAA + IAP) by default
+- IAP ROAS = IAP revenue only
+- IAA ROAS = Ad revenue only
+
+Data Source:
+- Default: Cohort data (grouped by user acquisition date)
+- Realtime: Use use_cohort=False for realtime estimates
 """
 
 import requests
@@ -35,7 +44,8 @@ class AxonClient:
         filter_campaign: Optional[str] = None,
         limit: int = 1000,
         offset: int = 0,
-        format: str = "json"
+        format: str = "json",
+        use_cohort: bool = True
     ) -> Dict[str, Any]:
         """
         Query the Axon Reporting API
@@ -49,6 +59,7 @@ class AxonClient:
             limit: Maximum number of results
             offset: Pagination offset
             format: "json" or "csv"
+            use_cohort: Use cohort data (default True). False for realtime.
 
         Returns:
             API response as dictionary
@@ -70,6 +81,10 @@ class AxonClient:
         if filter_campaign:
             params["filter_campaign"] = filter_campaign
 
+        # Add day_column for cohort data (default behavior)
+        if use_cohort:
+            params["day_column"] = "day"
+
         response = self.session.get(self.BASE_URL, params=params, timeout=60)
         response.raise_for_status()
         return response.json()
@@ -79,7 +94,8 @@ class AxonClient:
         campaign_name: str,
         start: str,
         end: str = "now",
-        metrics: Optional[List[str]] = None
+        metrics: Optional[List[str]] = None,
+        use_cohort: bool = True
     ) -> List[Dict[str, Any]]:
         """
         Get data for a specific campaign
@@ -89,19 +105,22 @@ class AxonClient:
             start: Start date (YYYY-MM-DD)
             end: End date (YYYY-MM-DD or "now")
             metrics: List of metric columns to retrieve
+            use_cohort: Use cohort data (default True). False for realtime.
 
         Returns:
             List of daily data points
         """
         if metrics is None:
+            # Default to D0 total ROAS (cohort data)
             metrics = ["day", "campaign", "impressions", "clicks", "conversions",
-                      "cost", "roas_7d", "iap_roas_7d", "iap_rev_7d", "total_rev_7d"]
+                      "cost", "roas_0d"]
 
         result = self.query(
             start=start,
             end=end,
             columns=metrics,
-            filter_campaign=campaign_name
+            filter_campaign=campaign_name,
+            use_cohort=use_cohort
         )
 
         return result.get("results", [])
@@ -110,7 +129,8 @@ class AxonClient:
         self,
         start: str,
         end: str = "now",
-        active_only: bool = True
+        active_only: bool = True,
+        use_cohort: bool = True
     ) -> List[str]:
         """
         List all campaigns in the date range
@@ -119,6 +139,7 @@ class AxonClient:
             start: Start date (YYYY-MM-DD)
             end: End date (YYYY-MM-DD or "now")
             active_only: Only return campaigns with data
+            use_cohort: Use cohort data (default True). False for realtime.
 
         Returns:
             List of campaign names
@@ -127,7 +148,8 @@ class AxonClient:
             start=start,
             end=end,
             columns=["campaign"],
-            limit=2000
+            limit=2000,
+            use_cohort=use_cohort
         )
 
         campaigns = set()
@@ -140,7 +162,8 @@ class AxonClient:
         self,
         start: str,
         end: str = "now",
-        metrics: Optional[List[str]] = None
+        metrics: Optional[List[str]] = None,
+        use_cohort: bool = True
     ) -> Dict[str, Dict[str, Any]]:
         """
         Get summary data for all campaigns
@@ -149,19 +172,22 @@ class AxonClient:
             start: Start date (YYYY-MM-DD)
             end: End date (YYYY-MM-DD or "now")
             metrics: List of metric columns to retrieve
+            use_cohort: Use cohort data (default True). False for realtime.
 
         Returns:
             Dictionary mapping campaign names to their summary stats
         """
         if metrics is None:
+            # Default to D0 total ROAS
             metrics = ["day", "campaign", "impressions", "clicks", "conversions",
-                      "cost", "roas_7d", "iap_roas_7d", "iap_rev_7d", "total_rev_7d"]
+                      "cost", "roas_0d"]
 
         result = self.query(
             start=start,
             end=end,
             columns=metrics,
-            limit=5000
+            limit=5000,
+            use_cohort=use_cohort
         )
 
         summaries = {}
@@ -173,9 +199,7 @@ class AxonClient:
                     "clicks": 0,
                     "conversions": 0,
                     "cost": 0,
-                    "roas_7d_values": [],
-                    "iap_roas_7d_values": [],
-                    "iap_rev_7d_total": 0,
+                    "roas_values": [],
                     "active_days": 0
                 }
 
@@ -184,45 +208,51 @@ class AxonClient:
             stats["clicks"] += int(row.get("clicks", 0))
             stats["conversions"] += int(row.get("conversions", 0))
             stats["cost"] += float(row.get("cost", 0))
-            stats["iap_rev_7d_total"] += float(row.get("iap_rev_7d", 0))
 
             # Track ROAS values only for active days
             if float(row.get("cost", 0)) > 0:
                 stats["active_days"] += 1
-                stats["roas_7d_values"].append(float(row.get("roas_7d", 0)))
-                stats["iap_roas_7d_values"].append(float(row.get("iap_roas_7d", 0)))
+                # Support both roas_0d and roas_7d
+                if "roas_0d" in row:
+                    stats["roas_values"].append(float(row.get("roas_0d", 0)))
+                elif "roas_7d" in row:
+                    stats["roas_values"].append(float(row.get("roas_7d", 0)))
 
         # Calculate averages
         for camp, stats in summaries.items():
-            if stats["roas_7d_values"]:
-                stats["avg_roas_7d"] = sum(stats["roas_7d_values"]) / len(stats["roas_7d_values"])
-                stats["avg_iap_roas_7d"] = sum(stats["iap_roas_7d_values"]) / len(stats["iap_roas_7d_values"])
+            if stats["roas_values"]:
+                stats["avg_roas"] = sum(stats["roas_values"]) / len(stats["roas_values"])
             else:
-                stats["avg_roas_7d"] = 0
-                stats["avg_iap_roas_7d"] = 0
+                stats["avg_roas"] = 0
 
         return summaries
 
     def print_summary_table(self, summaries: Dict[str, Dict[str, Any]]):
         """Print a formatted summary table"""
-        print("| Campaign | Cost | Avg_ROAS_7d | Avg_IAP_ROAS_7d | IAP_Rev | Impr | Conv | Days |")
-        print("|----------|------|-------------|-----------------|---------|------|------|------|")
+        print("| Campaign | Cost | Avg_ROAS | Impr | Conv | Days |")
+        print("|----------|------|----------|------|------|------|")
 
         for camp, stats in sorted(summaries.items(), key=lambda x: x[1]["cost"], reverse=True):
             if stats["cost"] > 0:
-                print(f"| {camp} | ${stats['cost']:.2f} | {stats['avg_roas_7d']:.2f}% | "
-                      f"{stats['avg_iap_roas_7d']:.2f}% | ${stats['iap_rev_7d_total']:.2f} | "
+                print(f"| {camp} | ${stats['cost']:.2f} | {stats['avg_roas']:.2f}% | "
                       f"{stats['impressions']:,} | {stats['conversions']} | {stats['active_days']} |")
 
 
 # Available column names reference
 AVAILABLE_COLUMNS = {
     "basic": ["day", "campaign", "impressions", "clicks", "conversions", "cost"],
-    "roas": ["roas_7d", "roas_28d", "iap_roas_7d", "iap_roas_28d"],
-    "revenue": ["iap_rev_7d", "iap_rev_28d", "total_rev_7d", "total_rev_28d"],
+    # ROAS columns: D0/D1/D3/D7/D28 formats
+    # Default: roas_Xd = Total ROAS (IAA + IAP)
+    # IAP only: iap_roas_Xd
+    "roas_d0": ["roas_0d", "iap_roas_0d", "iap_rev_0d", "total_rev_0d"],
+    "roas_d1": ["roas_1d", "iap_roas_1d", "iap_rev_1d", "total_rev_1d"],
+    "roas_d3": ["roas_3d", "iap_roas_3d", "iap_rev_3d", "total_rev_3d"],
+    "roas_d7": ["roas_7d", "iap_roas_7d", "iap_rev_7d", "total_rev_7d"],
+    "roas_d28": ["roas_28d", "iap_roas_28d", "iap_rev_28d", "total_rev_28d"],
+    "revenue": ["iap_rev_0d", "iap_rev_7d", "total_rev_0d", "total_rev_7d"],
     "retention": ["ret_7d", "ret_28d"],
-    "all": ["day", "campaign", "impressions", "clicks", "conversions", "cost",
-            "roas_7d", "iap_roas_7d", "iap_rev_7d", "total_rev_7d", "ret_7d"]
+    "all_d0": ["day", "campaign", "impressions", "clicks", "conversions", "cost",
+               "roas_0d", "iap_roas_0d", "iap_rev_0d", "total_rev_0d"],
 }
 
 
@@ -231,34 +261,53 @@ def main():
     if len(sys.argv) < 2:
         print("Usage: axon_client.py <api_key> <command> [args...]")
         print("\nCommands:")
-        print("  list <start> [end]              - List all campaigns")
-        print("  get <campaign> <start> [end]    - Get campaign data")
-        print("  summary <start> [end]           - Get summary of all campaigns")
+        print("  list <start> [end]              - List all campaigns (cohort)")
+        print("  get <campaign> <start> [end]    - Get campaign data (cohort)")
+        print("  summary <start> [end]           - Get summary of all campaigns (cohort)")
+        print("  realtime <start> [end]          - Get realtime data (not cohort)")
+        print("\nOptions:")
+        print("  --realtime                     - Use realtime data instead of cohort")
         print("\nDates: YYYY-MM-DD format, or 'now' for end")
         sys.exit(1)
 
     api_key = sys.argv[1]
     client = AxonClient(api_key)
 
-    if sys.argv[2] == "list":
-        start = sys.argv[3] if len(sys.argv) > 3 else "2026-01-01"
-        end = sys.argv[4] if len(sys.argv) > 4 else "now"
-        campaigns = client.list_campaigns(start, end)
+    # Check for realtime flag
+    use_realtime = "--realtime" in sys.argv
+    # Remove flag from args for cleaner processing
+    clean_args = [arg for arg in sys.argv if arg != "--realtime"]
+
+    if len(clean_args) < 3:
+        sys.exit(1)
+
+    command = clean_args[2]
+
+    if command == "list":
+        start = clean_args[3] if len(clean_args) > 3 else "2026-01-01"
+        end = clean_args[4] if len(clean_args) > 4 else "now"
+        campaigns = client.list_campaigns(start, end, use_cohort=not use_realtime)
         print("Campaigns:")
         for c in campaigns:
             print(f"  - {c}")
 
-    elif sys.argv[2] == "get":
-        campaign = sys.argv[3]
-        start = sys.argv[4] if len(sys.argv) > 4 else "2026-01-01"
-        end = sys.argv[5] if len(sys.argv) > 5 else "now"
-        data = client.get_campaign_data(campaign, start, end)
+    elif command == "get":
+        campaign = clean_args[3]
+        start = clean_args[4] if len(clean_args) > 4 else "2026-01-01"
+        end = clean_args[5] if len(clean_args) > 5 else "now"
+        data = client.get_campaign_data(campaign, start, end, use_cohort=not use_realtime)
         print(json.dumps(data, indent=2))
 
-    elif sys.argv[2] == "summary":
-        start = sys.argv[3] if len(sys.argv) > 3 else "2026-01-01"
-        end = sys.argv[4] if len(sys.argv) > 4 else "now"
-        summaries = client.get_campaign_summary(start, end)
+    elif command == "summary":
+        start = clean_args[3] if len(clean_args) > 3 else "2026-01-01"
+        end = clean_args[4] if len(clean_args) > 4 else "now"
+        summaries = client.get_campaign_summary(start, end, use_cohort=not use_realtime)
+        client.print_summary_table(summaries)
+
+    elif command == "realtime":
+        start = clean_args[3] if len(clean_args) > 3 else "2026-03-02"
+        end = clean_args[4] if len(clean_args) > 4 else "now"
+        summaries = client.get_campaign_summary(start, end, use_cohort=False)
         client.print_summary_table(summaries)
 
 
