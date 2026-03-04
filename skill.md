@@ -31,6 +31,63 @@ Tell me what you want to query, for example:
 - "What's the D7 IAP ROAS for InHisGrip_IOS campaign?"
 - "Compare D0 IAP vs D0 IAA ROAS between campaigns"
 - "Get realtime data for today's campaigns"
+- "Search for available columns" (when unsure about column names)
+
+## Learning Capability
+
+When you're unsure about API column names or parameters, use the built-in learning functions:
+
+### Python API
+
+```python
+from axon_client import AxonClient, search_columns, get_column_info
+
+# Search for columns by keyword
+results = AxonClient.search_columns("roas")
+# Returns: [{"column": "roas_x", "description": "..."}, ...]
+
+# Get detailed info about a column
+info = AxonClient.get_column_info("roas_7d")
+# Returns: {"column": "roas_7d", "exists": True, "description": "...", ...}
+
+# List all columns by category
+all_cols = AxonClient.list_all_columns()
+roas_cols = AxonClient.list_all_columns(category="roas")
+
+# Get time suffix information
+suffix_info = AxonClient.get_time_suffix_info()
+```
+
+### CLI Commands
+
+```bash
+# Search columns (no API key needed)
+python axon_client.py _ search roas
+
+# Get column info
+python axon_client.py _ info roas_7d
+
+# List all columns
+python axon_client.py _ columns
+python axon_client.py _ columns roas  # List by category
+
+# Show time suffix info
+python axon_client.py _ suffixes
+```
+
+### Available Categories
+
+- `basic` - Basic columns (day, campaign, impressions, etc.)
+- `metrics` - Performance metrics (CTR, conversion rate, etc.)
+- `roas` - ROAS columns (total, IAP, IAA)
+- `revenue` - Revenue columns
+- `retention` - Retention metrics
+- `sales` - Sales and conversion metrics
+- `campaign` - Campaign configuration
+- `creative` - Creative information
+- `device` - Device and location data
+
+For complete API documentation, see [API_DOCUMENTATION.md](API_DOCUMENTATION.md)
 
 ## ROAS Terminology
 
